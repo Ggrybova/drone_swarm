@@ -88,10 +88,10 @@ handle_cast({battery_low, Pid}, #drone_swarm_coordinator_state{zone_assignments 
 handle_cast({zones_declined, Pid, Zones}, #drone_swarm_coordinator_state{
     zone_assignments = ZoneAssignment, assigned_zones = AssignedZoneIds,
     unassigned_zones = UnassignedZoneIds} = State) ->
-    NewZoneAssignment = maps:without([Pid], ZoneAssignment),
+    {MRef, _} = maps:get(Pid, ZoneAssignment),
     logger:info("!!! {zones_declined, ~p}: zones ~p -> unassigned", [Pid, Zones]),
     NewState = State#drone_swarm_coordinator_state{
-        zone_assignments = NewZoneAssignment,
+        zone_assignments = ZoneAssignment#{Pid => {MRef, []}},
         assigned_zones = AssignedZoneIds -- Zones,
         unassigned_zones = lists:usort(UnassignedZoneIds ++ Zones)
     },

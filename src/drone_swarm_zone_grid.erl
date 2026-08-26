@@ -5,8 +5,15 @@
     find_adjacent_drone/2,
     select_connected_zones/2
 ]).
--export_type([zone/0]).
+-ifdef(TEST).
+-export([
+    is_adjacent/2,
+    has_adjacent_zone/2,
+    find_neighbors/2
+]).
+-endif.
 
+-export_type([zone/0]).
 -type zone() :: {integer(), integer()}.
 
 %% API
@@ -34,21 +41,19 @@ select_connected_zones(_MaxCount, [] = _Zones, [] = _NeedToCheck, Acc) ->
     Acc;
 select_connected_zones(MaxCount, _Zones, _NeedToCheck, Acc) when length(Acc) >= MaxCount ->
     Acc;
+select_connected_zones(_MaxCount, [_] = Zones, [] = _NeedToCheck, [] = _Acc) ->
+    Zones;
 select_connected_zones(MaxCount, Zones, [CurrZone | Rest] = _NeedToCheck0, Acc) ->
-%%    io:format("~n *1* MaxCount: ~p Zones: ~p~n     NeedToCheck: ~p ~p~n    Acc: ~p~n" , [MaxCount, Zones, CurrZoneId, Rest, Acc]),
-    Neighbors = find_neighbors(CurrZone, Zones),
-    Fun = fun(X) -> lists:member(X, Zones) andalso X > CurrZone end,
-    FilteredNeighbors = lists:filter(Fun, Neighbors),
-    NewAcc = lists:usort([CurrZone | Acc]), %% прибрати usort
-    NeedToCheck = lists:usort(Rest ++ FilteredNeighbors),
-    select_connected_zones(MaxCount, Zones -- [CurrZone], NeedToCheck, NewAcc);
+    Neighbors0 = find_neighbors(CurrZone, Zones),
+    Neighbors = lists:filter(fun(X) -> lists:member(X, Zones) end, Neighbors0),
+    NeedToCheck = lists:usort(Rest ++ Neighbors),
+    select_connected_zones(MaxCount, Zones -- [CurrZone], NeedToCheck, [CurrZone | Acc]);
 select_connected_zones(MaxCount, [CurrZone | Zones], NeedToCheck, Acc) ->
-%%    io:format("~n *2* MaxCount: ~p CurrZoneId: ~p Zones: ~p~n     NeedToCheck: ~p~n    Acc: ~p~n" , [MaxCount, CurrZoneId, Zones, NeedToCheck, Acc]),
-    Neighbors = find_neighbors(CurrZone, Zones),
-    FilteredNeighbors = lists:filter(fun(X) -> lists:member(X, Zones) end, Neighbors),
-    case FilteredNeighbors of
+    Neighbors0 = find_neighbors(CurrZone, Zones),
+    Neighbors = lists:filter(fun(X) -> lists:member(X, Zones) end, Neighbors0),
+    case Neighbors of
         [_|_] ->
-            NeedToCheckNew = lists:usort(FilteredNeighbors),
+            NeedToCheckNew = lists:usort(Neighbors),
             select_connected_zones(MaxCount, Zones, NeedToCheckNew, [CurrZone | Acc]);
         [] ->
             select_connected_zones(MaxCount, Zones, NeedToCheck, Acc)
