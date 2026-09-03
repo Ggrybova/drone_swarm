@@ -1,4 +1,4 @@
--module(drone_swarm_zone_grid).
+-module(drone_swarm_zone_grid_api).
 
 %% API
 -export([
