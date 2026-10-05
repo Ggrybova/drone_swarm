@@ -43,13 +43,32 @@ idle --assign_zones--> active --battery_low--> charging --charging_done--> idle
 - **charging** — battery depleted, zones returned to the pool, timer back to `idle`.
 - *(dead)* — not a separate state: the process just crashes, the supervisor starts a new one.
 
+### Drone movement
+
+Each active drone also tracks a `position` (pixel coordinates inside the
+block grid) and a `drone_location` (the zone that position currently
+falls in). On first getting zones (`idle` → `active`) it computes a
+starting position inside its first assigned zone
+(`drone_swarm_motion_api:init_pos/2`) and reports its `drone_location` to
+the coordinator.
+
+On every `move` timer tick, `drone_swarm_motion_api:move/4` picks a
+random adjacent cell and accepts it only if it still falls inside *any*
+of the drone's currently assigned zones — so a drone with several
+connected zones freely wanders across all of them, not just the one it
+started in. Whenever the zone it physically occupies changes, the drone
+reports the new `drone_location` to the coordinator.
+
 ### Zone allocation
 
 The coordinator keeps a `zone → drone` map and a pool of unassigned zones.
 On a drone request (`get_drone`) it either hands out a chain of adjacent
 free zones (`select_connected_zones/2`, BFS over the grid), or, if there
 are no free zones, takes part of the zones from the most loaded drone
-(`rebalance_zones/4`), keeping the taken zones connected. Losing a drone
+(`rebalance_zones/3`), keeping the taken zones connected — the zone that
+drone is currently standing in (its last reported `drone_location`) is
+never one of the zones taken away, so a drone is never stranded outside
+its own territory. Losing a drone
 (`DOWN` / `battery_low`) looks for a neighbor via `find_adjacent_drone/2`
 and hands it the freed zones as one block — otherwise they go back to the
 unassigned pool.
@@ -58,7 +77,7 @@ unassigned pool.
 
 1. `init/1` returns `{ok, State, {continue, resync}}`.
 2. `handle_continue(resync, ...)` enumerates the live children of
-   `workers_sup`, `monitor`s each one, asks for `{report_zones, self()}`
+   `workers_sup`, `monitor`s each one, asks for `{request_zones, self()}`
    and sets `resyncing = true` for a `?RESYNC_WINDOW` window (800 ms in
    prod, 2000 ms in tests).
 3. Drones respond with `{zones_report, Pid, Zones}` — the coordinator
@@ -100,7 +119,8 @@ drone_swarm_chaos_monkey:kill_coordinator().
 ## Tests
 
 ```
-rebar3 eunit   # zone logic: is_adjacent, select_connected_zones, find_adjacent_drone
+rebar3 eunit   # zone logic (is_adjacent, select_connected_zones, find_adjacent_drone)
+               # + drone movement (init_pos, move, zone-boundary checks, crossing between owned zones)
 rebar3 ct      # Common Test suites below
 ```
 
@@ -172,21 +192,39 @@ idle --assign_zones--> active --battery_low--> charging --charging_done--> idle
 - **charging** — батарея розряджена, зони віддані назад у пул, таймер до `idle`.
 - *(мертвий)* — не окремий стан: процес просто падає, supervisor піднімає новий.
 
+### Рух дронів
+
+Кожен активний дрон також тримає `position` (піксельні координати
+всередині сітки блоків) і `drone_location` (зону, в якій ця позиція зараз
+перебуває). При першому призначенні зон (`idle` → `active`) він рахує
+стартову позицію всередині своєї першої зони
+(`drone_swarm_motion_api:init_pos/2`) і доповідає свою `drone_location`
+координатору.
+
+На кожному тіку таймера `move` `drone_swarm_motion_api:move/4` обирає
+випадкову сусідню клітинку і приймає її, тільки якщо вона й досі входить
+у **будь-яку** з призначених дрону зон — тож дрон із кількома зв'язними
+зонами вільно гуляє по них усіх, а не лише по тій, з якої почав. Щойно
+зона, в якій він фізично перебуває, змінюється, дрон доповідає нову
+`drone_location` координатору.
+
 ### Розподіл зон
 
 Координатор веде мапу `зона → дрон` і пул незайнятих зон. При запиті дрона
 (`get_drone`) він або віддає ланцюжок суміжних вільних зон
 (`select_connected_zones/2`, BFS по сітці), або, якщо вільних зон немає,
-забирає частину зон у найзавантаженішого дрона (`rebalance_zones/4`), так
-щоб забрані зони лишались зв'язними. Втрата дрона (`DOWN` / `battery_low`)
-шукає сусіда через `find_adjacent_drone/2` і віддає йому звільнені зони
+забирає частину зон у найзавантаженішого дрона (`rebalance_zones/3`), так
+щоб забрані зони лишались зв'язними — зону, де цей дрон фізично зараз
+стоїть (його остання відома `drone_location`), ніколи не заберуть, тож
+дрон не лишиться поза межами власної території. Втрата дрона
+(`DOWN` / `battery_low`) шукає сусіда через `find_adjacent_drone/2` і віддає йому звільнені зони
 цілим блоком — інакше вони повертаються в пул незайнятих.
 
 ### Відновлення координатора після рестарту (reconciliation)
 
 1. `init/1` повертає `{ok, State, {continue, resync}}`.
 2. `handle_continue(resync, ...)` перебирає живих дітей `workers_sup`,
-   ставить кожному `monitor`, просить `{report_zones, self()}` і виставляє
+   ставить кожному `monitor`, просить `{request_zones, self()}` і виставляє
    `resyncing = true` на вікно `?RESYNC_WINDOW` (800 мс у проді, 2000 мс у
    тестах).
 3. Дрони відповідають `{zones_report, Pid, Zones}` — координатор
@@ -228,7 +266,8 @@ drone_swarm_chaos_monkey:kill_coordinator().
 ## Тести
 
 ```
-rebar3 eunit   # логіка зон: is_adjacent, select_connected_zones, find_adjacent_drone
+rebar3 eunit   # логіка зон (is_adjacent, select_connected_zones, find_adjacent_drone)
+               # + рух дронів (init_pos, move, межі зони, перехід між своїми зонами)
 rebar3 ct      # Common Test suites нижче
 ```
 
