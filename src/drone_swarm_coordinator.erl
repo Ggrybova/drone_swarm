@@ -26,12 +26,11 @@
 -type zone() :: drone_swarm_zone_grid_api:zone().
 
 -record(state, {
-    num_drones :: integer(), %% загальна кількість дронів   ЧИ ПОТРІБНО?
-    num_zones :: integer(), %% загальна кількість зон       ЧИ ПОТРІБНО?
     unassigned_zones :: [zone()], %% список пустих зон
     max_zones_per_drone :: integer(), %% макс.початкова кількість зон на дрона
     zone_assignments = #{} :: map(),  %% #{drone_pid::pid() => {ref(), [zone()]}}
                                      %% звʼязка дрон - зони
+    drone_locations = #{} :: map(),  %% #{drone_pid::pid() => zone()}
     resyncing = false :: boolean(), %% true поки координатор відновлює стан після рестарту
     deferred = [] :: [term()] %% get_drone/battery_low/zones_declined, відкладені на час resync
 }).
@@ -44,8 +43,10 @@
 start_link(NumDrones) ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [NumDrones], []).
 
+-ifdef(TEST).
 status() ->
     gen_server:call(?SERVER, status).
+-endif.
 
 init([NumDrones]) ->
     {GridWidth, GridLength} = application:get_env(drone_swarm, grid_dim, ?DEF_GRID_DIM),
@@ -54,8 +55,6 @@ init([NumDrones]) ->
     Zones = [{ZoneId div GridLength, ZoneId rem GridLength} ||
         ZoneId <- lists:seq(0, NumZones - 1)],
     State = #state{
-        num_drones = NumDrones,
-        num_zones = NumZones,
         unassigned_zones = Zones,
         max_zones_per_drone = MaxZonesPerDrone
     },
@@ -72,26 +71,34 @@ handle_cast({Type, _} = Msg, #state{resyncing = true, deferred = D} = State)
 handle_cast({zones_declined, _, _} = Msg, #state{resyncing = true, deferred = D} = State) ->
     {noreply, State#state{deferred = [Msg | D]}};
 handle_cast({get_drone, Pid}, #state{zone_assignments = ZoneAssignment,
-    unassigned_zones = [_|_] = UnassignedZoneIds} = State) ->
+    unassigned_zones = [_ | _] = UnassignedZoneIds} = State) ->
     MRef = monitor_drone(Pid, ZoneAssignment),
     ConnectedZones = drone_swarm_zone_grid_api:select_connected_zones(null, UnassignedZoneIds),
     Rest = UnassignedZoneIds -- ConnectedZones,
     Rest =/= [] andalso logger:info("!!! ConnectedZones: ~p, Rest: ~p", [ConnectedZones, Rest]),
     gen_statem:cast(Pid, {assign_zones, ConnectedZones}),
-    logger:info(" *  ASIGN  ~p -> ~p", [Pid, ConnectedZones]),
+%%    logger:info(" *  ASIGN  ~p -> ~p", [Pid, ConnectedZones]),
     NewState = State#state{
         unassigned_zones = Rest,
         zone_assignments = ZoneAssignment#{Pid => {MRef, ConnectedZones}}},
     {noreply, NewState};
 handle_cast({get_drone, Pid}, #state{zone_assignments = ZoneAssignment,
-    max_zones_per_drone = MaxZonesPerDrone} = State) ->
+    max_zones_per_drone = MaxZonesPerDrone, drone_locations = DroneLocations} = State) ->
     MRef = monitor_drone(Pid, ZoneAssignment),
-    NewZoneAssignment = rebalance_zones(Pid, MRef, MaxZonesPerDrone, ZoneAssignment),
+    {MostLoadedDronePid, ZonesCount} = find_most_loaded_drone(ZoneAssignment),
+    {MRef2, ZoneList} = maps:get(MostLoadedDronePid, ZoneAssignment),
+    DroneLocation = maps:get(MostLoadedDronePid, DroneLocations, null),
+    MostLoadedDrone = {MostLoadedDronePid, ZonesCount, ZoneList, DroneLocation},
+    {ZonesToRemove, ZonesToKeep} = rebalance_zones(Pid, MostLoadedDrone, MaxZonesPerDrone),
+    NewZoneAssignment = ZoneAssignment#{
+        Pid => {MRef, ZonesToRemove},
+        MostLoadedDronePid => {MRef2, ZonesToKeep}
+    },
     {noreply, State#state{zone_assignments = NewZoneAssignment}};
 handle_cast({battery_low, Pid}, #state{zone_assignments = ZoneAssignment} = State)
     when is_map_key(Pid, ZoneAssignment) ->
     {MRef, EmptyZones} = maps:get(Pid, ZoneAssignment),
-    logger:info("  * {batary_low, ~p}~n Ass-nt: ~p", [Pid, ZoneAssignment]),
+%%    logger:info("  * {batary_low, ~p}~n Ass-nt: ~p", [Pid, ZoneAssignment]),
     case reassign_zones(Pid, ZoneAssignment) of
         {ok, NewZoneAssignment} ->
             NewState = State#state{
@@ -100,7 +107,8 @@ handle_cast({battery_low, Pid}, #state{zone_assignments = ZoneAssignment} = Stat
             {noreply, NewState};
         {notfound, NewZoneAssignment} ->
             UnassignedZoneIds = State#state.unassigned_zones,
-            logger:info("!!! {batary_low, ~p} ZONES NOTFOUND~n zones ~p -> unassigned", [Pid, EmptyZones]),
+            logger:info("!!! {batary_low, ~p} ZONES NOTFOUND~n zones ~p -> unassigned",
+                [Pid, EmptyZones]),
             NewState = State#state{
                 zone_assignments = NewZoneAssignment#{Pid => {MRef, []}},
                 unassigned_zones = lists:usort(UnassignedZoneIds ++ EmptyZones)
@@ -136,6 +144,15 @@ handle_cast({zones_report, Pid, Zones}, #state{zone_assignments = ZoneAssignment
                 unassigned_zones = UnassignedZoneIds -- Zones
             }}
     end;
+handle_cast({drone_location, Pid, DroneLocation},
+    #state{drone_locations = DroneLocations} = State) ->
+    OldLocation = maps:get(Pid, DroneLocations, undefined),
+    logger:info("!!! {drone_location, ~p}: ~nold location ~p~nnew location ~p",
+        [Pid, OldLocation, DroneLocation]),
+    NewState = State#state{
+        drone_locations = DroneLocations#{Pid => DroneLocation}
+    },
+    {noreply, NewState};
 handle_cast(_Request, #state{} = State) ->
     {noreply, State}.
 
@@ -150,7 +167,7 @@ handle_continue(resync, #state{} = State) ->
             case Drones of
                 [] ->
                     {noreply, State};
-                [_|_] ->
+                [_ | _] ->
                     ZoneAssignment = resync(Drones),
                     NewState = State#state{
                         zone_assignments = ZoneAssignment,
@@ -164,14 +181,15 @@ handle_info({'DOWN', MRef, process, Pid, Reason},
     #state{zone_assignments = ZoneAssignment} = State)
     when is_map_key(Pid, ZoneAssignment) ->
     {MRef, EmptyZones} = maps:get(Pid, ZoneAssignment),
-    logger:info(" * ~p was ~p EmptyZones: ~p~n", [Pid, Reason, EmptyZones]),
+%%    logger:info(" * ~p was ~p EmptyZones: ~p~n", [Pid, Reason, EmptyZones]),
     case reassign_zones(Pid, ZoneAssignment) of
         {ok, NewZoneAssignment} ->
             NewState = State#state{zone_assignments = NewZoneAssignment},
             {noreply, NewState};
         {notfound, NewZoneAssignment} ->
             UnassignedZoneIds = State#state.unassigned_zones,
-            logger:info("!!! {~p, ~p} ZONES NOTFOUND~n zones ~p -> unassigned", [Reason, Pid, EmptyZones]),
+            logger:info("!!! {~p, ~p} ZONES NOTFOUND~n zones ~p -> unassigned",
+                [Reason, Pid, EmptyZones]),
             NewState = State#state{
                 zone_assignments = NewZoneAssignment,
                 unassigned_zones = lists:usort(UnassignedZoneIds ++ EmptyZones)
@@ -202,7 +220,7 @@ resync(Drones) ->
     ZoneAssignment = lists:foldl(
         fun(Pid, Acc) ->
             MRef = erlang:monitor(process, Pid),
-            gen_statem:cast(Pid, {report_zones, self()}),
+            gen_statem:cast(Pid, {request_zones, self()}),
             Acc#{Pid => {MRef, []}}
         end, #{}, Drones),
     erlang:send_after(?RESYNC_WINDOW, self(), resync_done),
@@ -227,7 +245,7 @@ reassign_zones(Pid, ZoneAssignment) ->
             {notfound, ZoneAssignment2}
     end.
 
-rebalance_zones(Pid, MRef1, MaxZonesPerDrone, ZoneAssignment) ->
+find_most_loaded_drone(ZoneAssignment) ->
     Fun = fun(Drone, {_Ref, Zones}, {_, MaxLength} = Acc) ->
         Length = length(Zones),
         case Length > MaxLength of
@@ -235,29 +253,36 @@ rebalance_zones(Pid, MRef1, MaxZonesPerDrone, ZoneAssignment) ->
             false -> Acc
         end
     end,
-    {MostLoadedDronePid, ZonesCount} = maps:fold(Fun, {undefined, 0}, ZoneAssignment),
-    {MRef2, ZoneList} = maps:get(MostLoadedDronePid, ZoneAssignment),
-    RemainingZonesCount = if
-        ZonesCount > MaxZonesPerDrone ->
-            MaxZonesPerDrone;
-        ZonesCount =:= MaxZonesPerDrone ->
-            MaxZonesPerDrone - 1;
-        ZonesCount > 1 ->
-            1;
-        true ->
-            logger:warning("!!! drone ~p can't get zones", [Pid]),
-            0
+    maps:fold(Fun, {undefined, 0}, ZoneAssignment).
+
+rebalance_zones(Pid, {MostLoadedDronePid, ZonesCount, ZoneList, DroneLocation}, MaxZonesPerDrone) ->
+    RemainingZonesCount = remaining_zones_count(Pid, ZonesCount, MaxZonesPerDrone),
+    ZonesToRemove = case DroneLocation of
+        null ->
+            drone_swarm_zone_grid_api:select_connected_zones(RemainingZonesCount, ZoneList);
+        {_, _} = Zone ->
+            drone_swarm_zone_grid_api:select_connected_zones(
+                RemainingZonesCount, ZoneList -- [Zone])
     end,
-    ZonesToRemove = drone_swarm_zone_grid_api:select_connected_zones(RemainingZonesCount, ZoneList),
     ZonesToKeep = ZoneList -- ZonesToRemove,
-    gen_statem:cast(MostLoadedDronePid, {unassign_zones, ZonesToRemove}),
-    gen_statem:cast(Pid, {assign_zones, ZonesToRemove}),
-    logger:info(" * RE ASIGN ~n       {~p - ~p}~n       {~p + ~p}",
-        [MostLoadedDronePid, ZonesToRemove, Pid, ZonesToRemove]),
-    ZoneAssignment#{
-        Pid => {MRef1, ZonesToRemove},
-        MostLoadedDronePid => {MRef2, ZonesToKeep}
-    }.
+    case ZonesToRemove =/= [] of
+        true ->
+            gen_statem:cast(MostLoadedDronePid, {unassign_zones, ZonesToRemove}),
+            gen_statem:cast(Pid, {assign_zones, ZonesToRemove});
+        false ->
+            ok
+    end,
+    {ZonesToRemove, ZonesToKeep}.
+
+remaining_zones_count(_Pid, ZonesCount, MaxZonesPerDrone) when ZonesCount > MaxZonesPerDrone ->
+    MaxZonesPerDrone;
+remaining_zones_count(_Pid, ZonesCount, MaxZonesPerDrone) when ZonesCount =:= MaxZonesPerDrone ->
+    MaxZonesPerDrone - 1;
+remaining_zones_count(_Pid, ZonesCount, _MaxZonesPerDrone) when ZonesCount > 1 ->
+    1;
+remaining_zones_count(Pid, _ZonesCount, _MaxZonesPerDrone) ->
+    logger:warning("!!! drone ~p can't get zones", [Pid]),
+    0.
 
 monitor_drone(Pid, ZoneAssignment) ->
     case maps:find(Pid, ZoneAssignment) of

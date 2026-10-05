@@ -16,10 +16,18 @@
 -define(BATTERY_LOW_TIMEOUT, 15000).
 -endif.
 
+-define(DEF_BLOCK_SIZE, {10, 15}).
+-define(MOTION_TIMEOUT, 3000).
+-define(DEF_GRID_DIM, {3, 3}).
+
 -type zone() :: drone_swarm_zone_grid_api:zone().
 
 -record(drone_swarm_worker_state, {
+    block_size :: {integer(), integer()},
+    grid_size :: {integer(), integer()},
     position :: {integer(), integer()} | undefined,
+    drone_location :: {integer(), integer()} | undefined,
+    motion_timeout = ?MOTION_TIMEOUT :: integer(),
     zones :: [zone()] | undefined
 }).
 
@@ -35,9 +43,21 @@ start_link() ->
 %%%===================================================================
 %% @private
 init([]) ->
+    BlockSize = application:get_env(drone_swarm, block_size, ?DEF_BLOCK_SIZE),
+    GridDim = application:get_env(drone_swarm, grid_dim, ?DEF_GRID_DIM),
     Delay = rand:uniform(?INIT_DELAY_MAX),
+    MotionTimeout = ?MOTION_TIMEOUT,
     gen_statem:cast(drone_swarm_chaos_monkey, {init_drone, self()}),
-    {ok, idle, #drone_swarm_worker_state{}, [{{timeout, get_drone}, Delay, get_drone}]}.
+    State = #drone_swarm_worker_state{
+        block_size = BlockSize,
+        grid_size = GridDim,
+        motion_timeout = MotionTimeout
+    },
+    Actions = [
+        {{timeout, get_drone}, Delay, get_drone},
+        {{timeout, move}, MotionTimeout, move}
+    ],
+    {ok, idle, State, Actions}.
 
 %% @private
 callback_mode() ->
@@ -47,47 +67,87 @@ callback_mode() ->
 idle({timeout, get_drone}, get_drone, _State) ->
     gen_statem:cast(drone_swarm_coordinator, {get_drone, self()}),
     keep_state_and_data;
-idle(cast, {assign_zones, Zones}, State) ->
+idle(cast, {assign_zones, [Zone | _] = Zones},
+    #drone_swarm_worker_state{block_size = BlockSize} = State) ->
     %%    тут треба вираховувати новий рух дрону враховуючи приасайнені зони
-    NewState = State#drone_swarm_worker_state{zones = Zones},
+    InitPos = drone_swarm_motion_api:init_pos(Zone, BlockSize),
+    DroneLocation = drone_swarm_motion_api:pos_to_zone(InitPos, BlockSize),
+    gen_statem:cast(drone_swarm_coordinator, {drone_location, self(), DroneLocation}),
+    NewState = State#drone_swarm_worker_state{
+        position = InitPos,
+        drone_location = DroneLocation,
+        zones = Zones
+    },
     Actions = [{{timeout, battery_low}, ?BATTERY_LOW_TIMEOUT, battery_low}],
-    logger:info(" - ~p  assign_zones: ~p", [self(), Zones]),
+    logger:info(" - ~p  pos ~p assign_zones: ~p", [self(), InitPos, Zones]),
     {next_state, active, NewState, Actions};
-idle(cast, {report_zones, Coordinator}, #drone_swarm_worker_state{zones = Zones}) ->
+idle(cast, {assign_zones, []}, _State) ->
+    logger:info(" - !!!!!! ~p  assign NO zones", [self()]),
+    keep_state_and_data;
+idle(cast, {request_zones, Coordinator}, #drone_swarm_worker_state{zones = Zones}) ->
     report_zones(Coordinator, Zones),
-    keep_state_and_data.
-active(cast, {assign_zones, Zones}, State) ->
+    keep_state_and_data;
+idle({timeout, move}, move, #drone_swarm_worker_state{motion_timeout = Timeout} = _State) ->
+    logger:info(" - move idle ~p", [self()]),
+    reschedule_move(Timeout).
+
+active(cast, {assign_zones, Zones}, #drone_swarm_worker_state{} = State) ->
     %%    тут треба вираховувати новий рух дрону враховуючи приасайнені зони
     NewState = State#drone_swarm_worker_state{zones = Zones},
-    logger:info(" - ~p  assign_zones: ~p", [self(), Zones]),
     {next_state, active, NewState};
 active(cast, {unassign_zones, Zones}, #drone_swarm_worker_state{zones = CurrZones} = State) ->
     UpdatedZones = CurrZones -- Zones,
-    logger:info(" - ~p  unassign_zones: ~p", [self(), Zones]),
     %%    тут треба вираховувати новий рух дрону враховуючи приасайнені зони
     NewState = State#drone_swarm_worker_state{zones = UpdatedZones},
     {next_state, active, NewState};
-active({timeout, battery_low}, battery_low, _State) ->
+active({timeout, battery_low}, battery_low, #drone_swarm_worker_state{grid_size = GridSize,
+    block_size = BlockSize, motion_timeout = Timeout} = _State) ->
     gen_statem:cast(drone_swarm_coordinator, {battery_low, self()}),
     ChargingActions = [{{timeout, charging_done}, ?CHARGING_TIME, charging_done}],
-    logger:info(" - ~p   battery_low", [self()]),
-    {next_state, charging, #drone_swarm_worker_state{}, ChargingActions};
-active(cast, {report_zones, Coordinator}, #drone_swarm_worker_state{zones = Zones}) ->
+%%    logger:info(" - ~p   battery_low", [self()]),
+    CleanState = #drone_swarm_worker_state{
+        grid_size = GridSize,
+        block_size = BlockSize,
+        motion_timeout = Timeout
+    },
+    {next_state, charging, CleanState, ChargingActions};
+active(cast, {request_zones, Coordinator}, #drone_swarm_worker_state{zones = Zones}) ->
     report_zones(Coordinator, Zones),
-    keep_state_and_data.
+    keep_state_and_data;
+active({timeout, move}, move, #drone_swarm_worker_state{zones = Zones,
+    position = CurrPos, block_size = BlockSize, motion_timeout = Timeout,
+    grid_size = GridSize, drone_location = DroneLocation} = State) ->
+    NewPos = drone_swarm_motion_api:move(CurrPos, Zones, BlockSize, GridSize),
+    NewDroneLocation = drone_swarm_motion_api:pos_to_zone(NewPos, BlockSize),
+    NewState = case DroneLocation =:= NewDroneLocation of
+        true ->
+            State#drone_swarm_worker_state{position = NewPos};
+        false ->
+            gen_statem:cast(drone_swarm_coordinator, {drone_location, self(), NewDroneLocation}),
+            State#drone_swarm_worker_state{
+                position = NewPos,
+                drone_location = NewDroneLocation
+            }
+    end,
+    logger:info(" - ~p  MOVE: ~p -> ~p", [self(), CurrPos, NewPos]),
+    {next_state, active, NewState, [{{timeout, move}, Timeout, move}]}.
+
 charging({timeout, charging_done}, charging_done, State) ->
     gen_statem:cast(drone_swarm_coordinator, {get_drone, self()}),
-    logger:info(" - ~p   charging_done", [self()]),
+%%    logger:info(" - ~p   charging_done", [self()]),
     {next_state, idle, State};
 charging(cast, {assign_zones, Zones}, _State) ->
-    logger:info(" - ~p   assign_zones - zones_declined(~p)", [self(), Zones]),
+%%    logger:info(" - ~p   assign_zones - zones_declined(~p)", [self(), Zones]),
     %% дрон вже сам перейшов у charging, а координатор ще не знав про це,
     %% коли надсилав assign_zones — відхиляємо, координатор поверне зони в пул
     gen_statem:cast(drone_swarm_coordinator, {zones_declined, self(), Zones}),
     keep_state_and_data;
-charging(cast, {report_zones, Coordinator}, #drone_swarm_worker_state{zones = Zones}) ->
+charging(cast, {request_zones, Coordinator}, #drone_swarm_worker_state{zones = Zones}) ->
     report_zones(Coordinator, Zones),
-    keep_state_and_data.
+    keep_state_and_data;
+charging({timeout, move}, move, #drone_swarm_worker_state{motion_timeout = Timeout} = _State) ->
+    logger:info(" - move charging ~p", [self()]),
+    reschedule_move(Timeout).
 
 %% @private
 terminate(_Reason, _StateName, #drone_swarm_worker_state{} = _State) ->
@@ -101,3 +161,6 @@ report_zones(Coordinator, undefined) ->
     gen_statem:cast(Coordinator, {zones_report, self(), []});
 report_zones(Coordinator, Zones) when is_list(Zones) ->
     gen_statem:cast(Coordinator, {zones_report, self(), Zones}).
+
+reschedule_move(Timeout) ->
+    {keep_state_and_data, [{{timeout, move}, Timeout, move}]}.

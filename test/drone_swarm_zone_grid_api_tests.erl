@@ -1,8 +1,8 @@
--module(drone_swarm_zone_grid_tests).
+-module(drone_swarm_zone_grid_api_tests).
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(GRID_3X3, [{0,0},{0,1},{0,2},{1,0},{1,1},{1,2},{2,0},{2,1},{2,2}]).
+-define(GRID_3X3, [{0,0}, {0,1}, {0,2}, {1,0}, {1,1}, {1,2}, {2,0}, {2,1}, {2,2}]).
 
 is_adjacent_test() ->
     ?assert(drone_swarm_zone_grid_api:is_adjacent({2, 2}, {1, 2})),
@@ -46,17 +46,17 @@ select_connected_zones_prefers_real_group_over_isolated_test() ->
     ?assertEqual(lists:sort([{2,2}, {2,3}]), lists:sort(Result)).
 
 select_connected_zones_small_group_test() ->
-    Expected = [{1,1},{1,2},{1,3},{0,3}],
+    Expected = [{1,1}, {1,2}, {1,3}, {0,3}],
     Result = drone_swarm_zone_grid_api:select_connected_zones(null, [{0,3}, {1,1}, {1,2}, {1,3}]),
     ?assertEqual(lists:sort(Expected), lists:sort(Result)).
 
 select_connected_zones_cross_shape_test() ->
-    Expected = [{2,1},{1,2},{1,0},{1,1},{0,1}],
+    Expected = [{2,1}, {1,2}, {1,0}, {1,1}, {0,1}],
     Result = drone_swarm_zone_grid_api:select_connected_zones(null, [{0,1}, {1,0}, {1,1}, {1,2}, {2,1}]),
     ?assertEqual(lists:sort(Expected), lists:sort(Result)).
 
 select_connected_zones_arbitrary_group_test() ->
-    Expected = [{5,4},{5,3},{4,3}],
+    Expected = [{5,4}, {5,3}, {4,3}],
     Result = drone_swarm_zone_grid_api:select_connected_zones(null, [{4,3}, {5,1}, {0,3}, {3,4}, {2,1}, {5,3}, {5,4}]),
     ?assertEqual(lists:sort(Expected), lists:sort(Result)).
 
@@ -65,7 +65,7 @@ select_connected_zones_respects_max_count_one_test() ->
 
 select_connected_zones_respects_max_count_two_test() ->
     Result = drone_swarm_zone_grid_api:select_connected_zones(2, ?GRID_3X3),
-    ?assertEqual(lists:sort([{0,0},{0,1}]), lists:sort(Result)).
+    ?assertEqual(lists:sort([{0,0}, {0,1}]), lists:sort(Result)).
 
 select_connected_zones_null_returns_all_connected_test() ->
     Result = drone_swarm_zone_grid_api:select_connected_zones(null, ?GRID_3X3),

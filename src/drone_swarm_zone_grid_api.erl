@@ -52,7 +52,7 @@ select_connected_zones(MaxCount, [CurrZone | Zones], NeedToCheck, Acc) ->
     Neighbors0 = find_neighbors(CurrZone, Zones),
     Neighbors = lists:filter(fun(X) -> lists:member(X, Zones) end, Neighbors0),
     case Neighbors of
-        [_|_] ->
+        [_ | _] ->
             NeedToCheckNew = lists:usort(Neighbors),
             select_connected_zones(MaxCount, Zones, NeedToCheckNew, [CurrZone | Acc]);
         [] ->
@@ -81,4 +81,7 @@ has_adjacent_zone(_EmptyZones, []) ->
     false.
 
 is_adjacent({R1, C1}, {R2, C2}) ->
-    (abs(R1 - R2) =:= 1 andalso C1 =:= C2) orelse (abs(C1 - C2) =:= 1 andalso R1 =:= R2).
+    adjacent_on_axis(R1, R2, C1, C2) orelse adjacent_on_axis(C1, C2, R1, R2).
+
+adjacent_on_axis(A1, A2, B1, B2) ->
+    abs(A1 - A2) =:= 1 andalso B1 =:= B2.
