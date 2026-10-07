@@ -1,11 +1,12 @@
 {application, drone_swarm, [
-    {description, "An OTP application"},
+    {description, "Autonomous drone swarm simulation on Erlang/OTP"},
     {vsn, "0.1.0"},
     {registered, []},
     {mod, {drone_swarm_app, []}},
     {applications, [
         kernel,
-        stdlib
+        stdlib,
+        cowboy
     ]},
     {env, []},
     {modules, []},

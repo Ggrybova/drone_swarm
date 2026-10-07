@@ -27,10 +27,16 @@ drone_swarm_sup                     (one_for_one)
 ├── drone_swarm_chaos_monkey        (gen_server)
 │     periodically kills a random drone; kill_coordinator/0 — manual
 │
+├── drone_swarm_view                (gen_server)
+│     collects drone states, broadcasts snapshots to the browser
+│
 └── drone_swarm_workers_sup         (one_for_one)
       ├── drone_swarm_worker × N    (gen_statem)
       └── ...
 ```
+
+The Cowboy HTTP listener (`drone_swarm_http`) is started by
+`drone_swarm_app` next to the supervision tree, not inside it.
 
 ### Drone life cycle (`gen_statem`)
 
@@ -65,10 +71,11 @@ The coordinator keeps a `zone → drone` map and a pool of unassigned zones.
 On a drone request (`get_drone`) it either hands out a chain of adjacent
 free zones (`select_connected_zones/2`, BFS over the grid), or, if there
 are no free zones, takes part of the zones from the most loaded drone
-(`rebalance_zones/3`), keeping the taken zones connected — the zone that
-drone is currently standing in (its last reported `drone_location`) is
-never one of the zones taken away, so a drone is never stranded outside
-its own territory. Losing a drone
+(`rebalance_zones/3`). Both parts stay connected: the zones the drone
+keeps are grown by BFS from the zone it is currently standing in (its last
+reported `drone_location`), so that zone is never taken away and the drone
+is never stranded outside its own territory; the new drone gets one
+connected piece of the rest. Losing a drone
 (`DOWN` / `battery_low`) looks for a neighbor via `find_adjacent_drone/2`
 and hands it the freed zones as one block — otherwise they go back to the
 unassigned pool.
@@ -89,6 +96,25 @@ unassigned pool.
    reports an empty zone list on `report_zones` (a separate fix against
    duplicate zones after recovery).
 
+## Web visualization
+
+A live map of the swarm in the browser: http://localhost:8080
+(Cowboy, plain HTTP + WebSocket).
+
+- **Server side.** Every drone reports its state, position and zones to
+  `drone_swarm_view` (`update/4`, a `cast`) on each change and each `move`
+  tick. The view `monitor`s every drone, keeps the latest snapshot and,
+  every 200 ms, if anything changed, sends it as JSON to all subscribed
+  WebSocket handlers (`drone_swarm_ws_handler`). A crashed drone is kept in
+  the snapshot as `dead` for 2 s, so the map can show where it died.
+- **Browser** (`priv/static/index.html`, `app.js`, a `<canvas>`):
+  - each zone is filled with its owner's color, free zones are hatched;
+  - active drones move smoothly between reported positions;
+  - a drone that goes to charge fades out with a ⚡ mark;
+  - a dead drone is shown as a blinking red cross;
+  - the side panel lists charging and idle drones;
+  - the page reconnects on its own after a server restart.
+
 ## Configuration
 
 `config/drone_swarm.config`:
@@ -98,7 +124,9 @@ unassigned pool.
 | `num_drones` | `5` | Number of drones in the swarm |
 | `block_size` | `{10, 15}` | Size of a single map block |
 | `grid_dim` | `{3, 3}` | Zone grid size (→ 9 zones) |
-| `chaos_interval` | `7000` | Interval (ms) between chaos monkey drone kills |
+| `chaos_interval` | `8000` | Interval (ms) between chaos monkey drone kills |
+| `motion_timeout` | `300` | Interval (ms) between drone `move` ticks (`1000` if not set) |
+| `http_port` | `8080` | Port of the web visualization |
 
 ## Running
 
@@ -109,6 +137,7 @@ rebar3 shell
 This starts the supervision tree: coordinator, chaos monkey, N drones.
 The logs show drone registration, zone assignments, and, once per
 `chaos_interval`, a random drone kill and reassignment of its zones.
+Open http://localhost:8080 to watch the swarm live.
 
 Kill the coordinator manually (to check reconciliation):
 
@@ -121,6 +150,7 @@ drone_swarm_chaos_monkey:kill_coordinator().
 ```
 rebar3 eunit   # zone logic (is_adjacent, select_connected_zones, find_adjacent_drone)
                # + drone movement (init_pos, move, zone-boundary checks, crossing between owned zones)
+               # + rebalance keeps both the kept and the taken zones connected
 rebar3 ct      # Common Test suites below
 ```
 
@@ -140,7 +170,7 @@ rebar3 ct      # Common Test suites below
 The OTP application core (drones, coordinator, supervision, chaos monkey,
 self-healing on both levels, coordinator reconciliation) is implemented
 and covered by tests. The web visualization (Cowboy + WebSocket + browser
-map) and the Docker wrapper from the plan are not implemented yet.
+map) is implemented. The Docker wrapper is not implemented yet.
 
 ## License
 
@@ -176,10 +206,16 @@ drone_swarm_sup                     (one_for_one)
 ├── drone_swarm_chaos_monkey        (gen_server)
 │     періодично вбиває випадкового дрона; kill_coordinator/0 — вручну
 │
+├── drone_swarm_view                (gen_server)
+│     збирає стани дронів, розсилає знімки в браузер
+│
 └── drone_swarm_workers_sup         (one_for_one)
       ├── drone_swarm_worker × N    (gen_statem)
       └── ...
 ```
+
+HTTP-лістенер Cowboy (`drone_swarm_http`) запускає `drone_swarm_app`
+поруч із деревом нагляду, а не всередині нього.
 
 ### Життєвий цикл дрона (`gen_statem`)
 
@@ -213,10 +249,12 @@ idle --assign_zones--> active --battery_low--> charging --charging_done--> idle
 Координатор веде мапу `зона → дрон` і пул незайнятих зон. При запиті дрона
 (`get_drone`) він або віддає ланцюжок суміжних вільних зон
 (`select_connected_zones/2`, BFS по сітці), або, якщо вільних зон немає,
-забирає частину зон у найзавантаженішого дрона (`rebalance_zones/3`), так
-щоб забрані зони лишались зв'язними — зону, де цей дрон фізично зараз
-стоїть (його остання відома `drone_location`), ніколи не заберуть, тож
-дрон не лишиться поза межами власної території. Втрата дрона
+забирає частину зон у найзавантаженішого дрона (`rebalance_zones/3`). Обидві
+частини лишаються зв'язними: зони, які дрон залишає собі, набираються
+BFS-ом від зони, де він фізично зараз стоїть (його остання відома
+`drone_location`), тож цю зону ніколи не заберуть і дрон не лишиться поза
+межами власної території; новий дрон отримує один зв'язний шматок решти.
+Втрата дрона
 (`DOWN` / `battery_low`) шукає сусіда через `find_adjacent_drone/2` і віддає йому звільнені зони
 цілим блоком — інакше вони повертаються в пул незайнятих.
 
@@ -236,6 +274,26 @@ idle --assign_zones--> active --battery_low--> charging --charging_done--> idle
    `report_zones` віддає порожній список (окремий фікс від дублювання зон
    після відновлення).
 
+## Веб-візуалізація
+
+Жива карта рою в браузері: http://localhost:8080 (Cowboy, звичайний HTTP +
+WebSocket).
+
+- **Сервер.** Кожен дрон при кожній зміні та на кожному тіку `move`
+  повідомляє `drone_swarm_view` свій стан, позицію і зони (`update/4`,
+  `cast`). View ставить `monitor` кожному дрону, тримає останній знімок і
+  раз на 200 мс, якщо щось змінилось, надсилає його JSON-ом усім
+  підписаним WebSocket-обробникам (`drone_swarm_ws_handler`). Загиблий дрон
+  ще 2 с лишається у знімку як `dead`, щоб на карті було видно, де він
+  загинув.
+- **Браузер** (`priv/static/index.html`, `app.js`, `<canvas>`):
+  - кожна зона зафарбована кольором свого дрона, вільні зони заштриховані;
+  - активні дрони плавно рухаються між отриманими позиціями;
+  - дрон, що пішов на зарядку, тане з позначкою ⚡;
+  - загиблий дрон показаний червоним хрестиком, що блимає;
+  - бічна панель показує дронів на зарядці та без зон (idle);
+  - після рестарту сервера сторінка сама перепідключається.
+
 ## Конфігурація
 
 `config/drone_swarm.config`:
@@ -245,7 +303,9 @@ idle --assign_zones--> active --battery_low--> charging --charging_done--> idle
 | `num_drones` | `5` | Кількість дронів у рої |
 | `block_size` | `{10, 15}` | Розмір одного блоку карти |
 | `grid_dim` | `{3, 3}` | Розмір сітки зон (→ 9 зон) |
-| `chaos_interval` | `7000` | Інтервал (мс) між вбивствами дрона chaos monkey |
+| `chaos_interval` | `8000` | Інтервал (мс) між вбивствами дрона chaos monkey |
+| `motion_timeout` | `300` | Інтервал (мс) між тіками `move` дрона (`1000`, якщо не задано) |
+| `http_port` | `8080` | Порт веб-візуалізації |
 
 ## Запуск
 
@@ -255,7 +315,8 @@ rebar3 shell
 
 Підніметься дерево нагляду: координатор, chaos monkey, N дронів. У логах
 видно реєстрацію дронів, призначення зон, а раз на `chaos_interval` —
-вбивство випадкового дрона та перерозподіл його зон.
+вбивство випадкового дрона та перерозподіл його зон. Живу карту рою видно
+на http://localhost:8080.
 
 Вбити координатора вручну (перевірити reconciliation):
 
@@ -268,6 +329,7 @@ drone_swarm_chaos_monkey:kill_coordinator().
 ```
 rebar3 eunit   # логіка зон (is_adjacent, select_connected_zones, find_adjacent_drone)
                # + рух дронів (init_pos, move, межі зони, перехід між своїми зонами)
+               # + ребаланс лишає зв'язними і залишені, і забрані зони
 rebar3 ct      # Common Test suites нижче
 ```
 
@@ -287,7 +349,7 @@ rebar3 ct      # Common Test suites нижче
 Ядро OTP-застосунку (дрони, координатор, supervision, chaos monkey,
 self-healing на обох рівнях, reconciliation координатора) реалізоване й
 покрите тестами. Веб-візуалізація (Cowboy + WebSocket + карта в браузері)
-та Docker-обгортка з плану поки не реалізовані.
+реалізована. Docker-обгортка поки не реалізована.
 
 ## Ліцензія
 

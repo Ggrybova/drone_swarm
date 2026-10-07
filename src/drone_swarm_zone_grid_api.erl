@@ -43,6 +43,9 @@ select_connected_zones(MaxCount, _Zones, _NeedToCheck, Acc) when length(Acc) >= 
     Acc;
 select_connected_zones(_MaxCount, [_] = Zones, [] = _NeedToCheck, [] = _Acc) ->
     Zones;
+select_connected_zones(_MaxCount, _Zones, [] = _NeedToCheck, [_ | _] = Acc) ->
+    %% обхід одного зв'язного шматка завершено — далі не йдемо
+    Acc;
 select_connected_zones(MaxCount, Zones, [CurrZone | Rest] = _NeedToCheck0, Acc) ->
     Neighbors0 = find_neighbors(CurrZone, Zones),
     Neighbors = lists:filter(fun(X) -> lists:member(X, Zones) end, Neighbors0),

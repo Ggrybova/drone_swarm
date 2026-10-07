@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="uk">
+<head>
+    <meta charset="utf-8">
+    <title>Drone Swarm</title>
+    <style>
+        body { margin: 0; font: 14px system-ui, sans-serif; display: flex; height: 100vh; }
+        #map { flex: 1; min-width: 0; height: 100vh; display: block; background: #fafafa; }
+        aside { width: 240px; padding: 12px 16px; border-left: 1px solid #ddd; overflow-y: auto; }
+        h2 { font-size: 12px; margin: 18px 0 4px; text-transform: uppercase; color: #666; }
+        ul { margin: 0; padding-left: 18px; font-family: ui-monospace, monospace; }
+        #status.on { color: #1a8a5a; }
+        #status.off { color: #c0392b; }
+    </style>
+</head>
+<body>
+<canvas id="map"></canvas>
+<aside>
+    <div>WebSocket: <b id="status">connecting…</b></div>
+    <div id="counts" style="margin-top: 8px"></div>
+    <h2>⚡ Charging</h2>
+    <ul id="charging"></ul>
+    <h2>Idle (no zones)</h2>
+    <ul id="idle"></ul>
+</aside>
+<script src="/static/app.js"></script>
+</body>
+</html>

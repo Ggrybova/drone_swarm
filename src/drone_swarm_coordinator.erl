@@ -13,15 +13,15 @@
 ]).
 
 -define(SERVER, ?MODULE).
--define(DEF_GRID_DIM, {3, 3}).
 -ifdef(TEST).
--export([status/0]).
+-export([status/0, rebalance_zones/3]).
 -define(RESYNC_WINDOW, 2000).
 -else.
 -define(RESYNC_WINDOW, 800).
 -endif.
 
 -include_lib("kernel/include/logger.hrl").
+-include("drone_swarm.hrl").
 
 -type zone() :: drone_swarm_zone_grid_api:zone().
 
@@ -134,11 +134,11 @@ handle_cast({zones_report, Pid, Zones}, #state{zone_assignments = ZoneAssignment
     unassigned_zones = UnassignedZoneIds, resyncing = Resyncing} = State) ->
     case {Resyncing, maps:find(Pid, ZoneAssignment)} of
         {false, {ok, {_MRef, [_ | _] = Have}}} ->
-            logger:info(" * пізній zones_report від ~p (уже має ~p), ігнорую", [Pid, Have]),
+            logger:info(" !!! * пізній zones_report від ~p (уже має ~p), ігнорую", [Pid, Have]),
             {noreply, State};
         {_, _} ->
             MRef = monitor_drone(Pid, ZoneAssignment),
-            logger:info(" * resync: ~p -> ~p", [Pid, Zones]),
+%%            logger:info(" * resync: ~p -> ~p", [Pid, Zones]),
             {noreply, State#state{
                 zone_assignments = ZoneAssignment#{Pid => {MRef, Zones}},
                 unassigned_zones = UnassignedZoneIds -- Zones
@@ -146,9 +146,9 @@ handle_cast({zones_report, Pid, Zones}, #state{zone_assignments = ZoneAssignment
     end;
 handle_cast({drone_location, Pid, DroneLocation},
     #state{drone_locations = DroneLocations} = State) ->
-    OldLocation = maps:get(Pid, DroneLocations, undefined),
-    logger:info("!!! {drone_location, ~p}: ~nold location ~p~nnew location ~p",
-        [Pid, OldLocation, DroneLocation]),
+%%    OldLocation = maps:get(Pid, DroneLocations, undefined),
+%%    logger:info("!!! {drone_location, ~p}: ~nold location ~p~nnew location ~p",
+%%        [Pid, OldLocation, DroneLocation]),
     NewState = State#state{
         drone_locations = DroneLocations#{Pid => DroneLocation}
     },
@@ -201,7 +201,7 @@ handle_info({'DOWN', _MRef, process, Pid, Reason}, #state{} = State) ->
     {noreply, State};
 handle_info(resync_done, #state{deferred = Deferred} = State) ->
     lists:foreach(fun(Msg) -> gen_server:cast(self(), Msg) end, lists:reverse(Deferred)),
-    logger:info(" * resync завершено, програю ~p відкладених", [length(Deferred)]),
+    logger:info(" !!! * resync завершено, програю ~p відкладених", [length(Deferred)]),
     {noreply, State#state{resyncing = false, deferred = []}};
 handle_info(Info, #state{} = State) ->
     logger:info("!!!  ~p", [Info]),
@@ -224,7 +224,7 @@ resync(Drones) ->
             Acc#{Pid => {MRef, []}}
         end, #{}, Drones),
     erlang:send_after(?RESYNC_WINDOW, self(), resync_done),
-    logger:info(" * resync: запит зон у ~p дронів", [length(Drones)]),
+%%    logger:info(" * resync: запит зон у ~p дронів", [length(Drones)]),
     ZoneAssignment.
 
 reassign_zones(Pid, ZoneAssignment) ->
@@ -256,14 +256,20 @@ find_most_loaded_drone(ZoneAssignment) ->
     maps:fold(Fun, {undefined, 0}, ZoneAssignment).
 
 rebalance_zones(Pid, {MostLoadedDronePid, ZonesCount, ZoneList, DroneLocation}, MaxZonesPerDrone) ->
-    RemainingZonesCount = remaining_zones_count(Pid, ZonesCount, MaxZonesPerDrone),
-    ZonesToRemove = case DroneLocation of
-        null ->
-            drone_swarm_zone_grid_api:select_connected_zones(RemainingZonesCount, ZoneList);
-        {_, _} = Zone ->
-            drone_swarm_zone_grid_api:select_connected_zones(
-                RemainingZonesCount, ZoneList -- [Zone])
+    RemainingCount = remaining_zones_count(Pid, ZonesCount, MaxZonesPerDrone),
+%%    ZonesToRemove = case DroneLocation of
+%%        null ->
+%%            drone_swarm_zone_grid_api:select_connected_zones(RemainingZonesCount, ZoneList);
+%%        {_, _} = Zone ->
+%%            drone_swarm_zone_grid_api:select_connected_zones(
+%%                RemainingZonesCount, ZoneList -- [Zone])
+%%    end,
+    Ordered = case DroneLocation of
+        null -> ZoneList;
+        {_, _} = Zone -> [Zone | ZoneList -- [Zone]]
     end,
+    Core = drone_swarm_zone_grid_api:select_connected_zones(ZonesCount - RemainingCount, Ordered),
+    ZonesToRemove = drone_swarm_zone_grid_api:select_connected_zones(null, ZoneList -- Core),
     ZonesToKeep = ZoneList -- ZonesToRemove,
     case ZonesToRemove =/= [] of
         true ->
