@@ -33,6 +33,13 @@ init([]) ->
             type        => worker
         },
         #{
+            id          => drone_swarm_view,
+            start       => {drone_swarm_view, start_link, []},
+            restart     => permanent,
+            shutdown    => 5000,
+            type        => worker
+        },
+        #{
             id          => drone_swarm_workers_sup,
             start       => {drone_swarm_workers_sup, start_link, [NumDrones]},
             restart     => permanent,

@@ -1,0 +1,2 @@
+-define(DEF_GRID_DIM, {3, 3}).
+-define(DEF_BLOCK_SIZE, {10, 15}).
