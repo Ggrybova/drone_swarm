@@ -1,5 +1,4 @@
 -module(drone_swarm_chaos_monkey).
-
 -behaviour(gen_server).
 
 -export([start_link/0, kill_coordinator/0]).
@@ -7,11 +6,11 @@
     code_change/3]).
 
 -define(SERVER, ?MODULE).
--define(KILL_INTERVAL, 7000).
+-define(KILL_INTERVAL, 8000).
 
 -record(drone_swarm_chaos_monkey_state, {
     kill_interval :: integer(),
-    drones = [] :: [pid()] %% список дронів
+    drones = [] :: [pid()]
 }).
 
 %%%===================================================================
@@ -26,7 +25,6 @@ kill_coordinator() ->
         undefined ->
             {error, not_running};
         Pid ->
-            logger:info(" = KILL COORDINATOR = ~p", [Pid]),
             exit(Pid, kill),
             ok
     end.
@@ -48,8 +46,7 @@ handle_info(kill_drone, #drone_swarm_chaos_monkey_state{drones = [_ | _] = Drone
     kill_interval = KillInterval} = State) ->
     DronePid = lists:nth(rand:uniform(length(Drones)), Drones),
     true = exit(DronePid, kill),
-    X = erlang:send_after(KillInterval, self(), kill_drone),
-    logger:debug(" = KILL = ~p, ~p", [DronePid, X]),
+    _ = erlang:send_after(KillInterval, self(), kill_drone),
     {noreply, State#drone_swarm_chaos_monkey_state{drones = lists:delete(DronePid, Drones)}};
 handle_info(_Info, #drone_swarm_chaos_monkey_state{} = State) ->
     {noreply, State}.

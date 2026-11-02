@@ -44,7 +44,9 @@ The Cowboy HTTP listener (`drone_swarm_http`) is started by
 idle --assign_zones--> active --battery_low--> charging --charging_done--> idle
 ```
 
-- **idle** — alive, no task, waiting for zones from the coordinator.
+- **idle** — alive, no task, waiting for zones from the coordinator. While
+  idle the drone re-sends `get_drone` every 2 s, so surplus drones (more
+  drones than zones) pick up a zone as soon as another drone goes to charge.
 - **active** — patrols assigned zones, holds a `battery_low` timer.
 - **charging** — battery depleted, zones returned to the pool, timer back to `idle`.
 - *(dead)* — not a separate state: the process just crashes, the supervisor starts a new one.
@@ -78,7 +80,10 @@ is never stranded outside its own territory; the new drone gets one
 connected piece of the rest. Losing a drone
 (`DOWN` / `battery_low`) looks for a neighbor via `find_adjacent_drone/2`
 and hands it the freed zones as one block — otherwise they go back to the
-unassigned pool.
+unassigned pool. A drone can refuse zones it was given (`zones_declined`),
+for example if it has already gone to charge. The coordinator then frees only
+the zones that still belong to this drone. If some of these zones were already
+given to another drone, that other drone keeps them.
 
 ### Coordinator restart recovery (reconciliation)
 
@@ -106,13 +111,14 @@ A live map of the swarm in the browser: http://localhost:8080
   tick. The view `monitor`s every drone, keeps the latest snapshot and,
   every 200 ms, if anything changed, sends it as JSON to all subscribed
   WebSocket handlers (`drone_swarm_ws_handler`). A crashed drone is kept in
-  the snapshot as `dead` for 2 s, so the map can show where it died.
+  the snapshot as `dead` for 3 s, so the map can show where it died.
 - **Browser** (`priv/static/index.html`, `app.js`, a `<canvas>`):
   - each zone is filled with its owner's color, free zones are hatched;
   - active drones move smoothly between reported positions;
   - a drone that goes to charge fades out with a ⚡ mark;
   - a dead drone is shown as a blinking red cross;
-  - the side panel lists charging and idle drones;
+  - the side panel lists active drones (with their zone count), charging,
+    idle and recently killed drones;
   - the page reconnects on its own after a server restart.
 
 ## Configuration
@@ -135,9 +141,9 @@ rebar3 shell
 ```
 
 This starts the supervision tree: coordinator, chaos monkey, N drones.
-The logs show drone registration, zone assignments, and, once per
-`chaos_interval`, a random drone kill and reassignment of its zones.
-Open http://localhost:8080 to watch the swarm live.
+Once per `chaos_interval` the chaos monkey kills a random drone, and its
+zones go to other drones. The easiest way to watch this is the live map at
+http://localhost:8080.
 
 Kill the coordinator manually (to check reconciliation):
 
@@ -155,15 +161,15 @@ rebar3 ct      # Common Test suites below
 ```
 
 - `drone_swarm_allocation_SUITE` — zone allocation on different grids
-  (1×1, 1×5, 3×3, 6×4) and drone counts: full coverage, empty pool,
-  `min(zones, drones)` drones busy.
+  (1×1, 1×5, 3×2, 3×3, 6×4) and drone counts: full coverage, empty pool,
+  `min(zones, drones)` drones busy. If there are more drones than zones, every
+  drone still gets a zone at some point (`test_surplus_drones_get_zones`).
 - `drone_swarm_recovery_SUITE` — coordinator restart: map coverage is
-  preserved (`test_restart_preserves_coverage`), and there is no zone
+  preserved (`test_restart_preserves_coverage`), there is no zone
   duplication if the restart catches a drone in the `charging` state
-  (`test_restart_while_charging`).
-
-> Do not run `rebar3 ct` concurrently in two terminals — a race over
-> `_build/` breaks the CT logger.
+  (`test_restart_while_charging`), and the drones' real zones (as seen by
+  `drone_swarm_view`) stay unique after the restart
+  (`test_no_duplicate_zones_after_restart`).
 
 ## Status
 
@@ -224,6 +230,8 @@ idle --assign_zones--> active --battery_low--> charging --charging_done--> idle
 ```
 
 - **idle** — живий, без задачі, чекає призначення зон від координатора.
+  Поки дрон в idle, він кожні 2 с перепитує `get_drone`, тож зайві дрони
+  (дронів більше, ніж зон) отримують зону, щойно інший дрон піде на зарядку.
 - **active** — патрулює призначені зони, тримає таймер `battery_low`.
 - **charging** — батарея розряджена, зони віддані назад у пул, таймер до `idle`.
 - *(мертвий)* — не окремий стан: процес просто падає, supervisor піднімає новий.
@@ -254,9 +262,12 @@ idle --assign_zones--> active --battery_low--> charging --charging_done--> idle
 BFS-ом від зони, де він фізично зараз стоїть (його остання відома
 `drone_location`), тож цю зону ніколи не заберуть і дрон не лишиться поза
 межами власної території; новий дрон отримує один зв'язний шматок решти.
-Втрата дрона
-(`DOWN` / `battery_low`) шукає сусіда через `find_adjacent_drone/2` і віддає йому звільнені зони
-цілим блоком — інакше вони повертаються в пул незайнятих.
+Втрата дрона (`DOWN` / `battery_low`) шукає сусіда через `find_adjacent_drone/2`
+і віддає йому звільнені зони цілим блоком — інакше вони повертаються в пул
+незайнятих. Дрон може відмовитися від виданих зон (`zones_declined`),
+наприклад, якщо він уже пішов на зарядку. Тоді координатор звільняє лише ті
+зони, які досі належать цьому дрону. Якщо частину цих зон уже віддали іншому
+дрону, вони лишаються за тим іншим дроном.
 
 ### Відновлення координатора після рестарту (reconciliation)
 
@@ -284,14 +295,15 @@ WebSocket).
   `cast`). View ставить `monitor` кожному дрону, тримає останній знімок і
   раз на 200 мс, якщо щось змінилось, надсилає його JSON-ом усім
   підписаним WebSocket-обробникам (`drone_swarm_ws_handler`). Загиблий дрон
-  ще 2 с лишається у знімку як `dead`, щоб на карті було видно, де він
+  ще 3 с лишається у знімку як `dead`, щоб на карті було видно, де він
   загинув.
 - **Браузер** (`priv/static/index.html`, `app.js`, `<canvas>`):
   - кожна зона зафарбована кольором свого дрона, вільні зони заштриховані;
   - активні дрони плавно рухаються між отриманими позиціями;
   - дрон, що пішов на зарядку, тане з позначкою ⚡;
   - загиблий дрон показаний червоним хрестиком, що блимає;
-  - бічна панель показує дронів на зарядці та без зон (idle);
+  - бічна панель показує активних дронів (з кількістю зон), дронів на
+    зарядці, без зон (idle) і нещодавно вбитих;
   - після рестарту сервера сторінка сама перепідключається.
 
 ## Конфігурація
@@ -313,10 +325,10 @@ WebSocket).
 rebar3 shell
 ```
 
-Підніметься дерево нагляду: координатор, chaos monkey, N дронів. У логах
-видно реєстрацію дронів, призначення зон, а раз на `chaos_interval` —
-вбивство випадкового дрона та перерозподіл його зон. Живу карту рою видно
-на http://localhost:8080.
+Підніметься дерево нагляду: координатор, chaos monkey, N дронів. Раз на
+`chaos_interval` chaos monkey вбиває випадкового дрона, і його зони переходять
+до інших дронів. Найзручніше спостерігати за цим на живій карті:
+http://localhost:8080.
 
 Вбити координатора вручну (перевірити reconciliation):
 
@@ -334,15 +346,15 @@ rebar3 ct      # Common Test suites нижче
 ```
 
 - `drone_swarm_allocation_SUITE` — розподіл зон на різних сітках
-  (1×1, 1×5, 3×3, 6×4) і кількості дронів: повне покриття, порожній пул,
-  задіяно `min(зон, дронів)` дронів.
+  (1×1, 1×5, 3×2, 3×3, 6×4) і кількості дронів: повне покриття, порожній пул,
+  задіяно `min(зон, дронів)` дронів. Якщо дронів більше, ніж зон, кожен дрон
+  рано чи пізно отримує зону (`test_surplus_drones_get_zones`).
 - `drone_swarm_recovery_SUITE` — рестарт координатора: покриття карти
-  зберігається (`test_restart_preserves_coverage`), і немає дублювання
+  зберігається (`test_restart_preserves_coverage`), немає дублювання
   зон, якщо дрон рестарт застав у стані `charging`
-  (`test_restart_while_charging`).
-
-> Не запускати `rebar3 ct` паралельно в двох терміналах — гонка за
-> `_build/` ламає CT-логер.
+  (`test_restart_while_charging`), і реальні зони дронів (за даними
+  `drone_swarm_view`) лишаються унікальними після рестарту
+  (`test_no_duplicate_zones_after_restart`).
 
 ## Статус
 

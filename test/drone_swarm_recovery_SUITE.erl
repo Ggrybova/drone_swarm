@@ -6,7 +6,8 @@
 
 -export([
     test_restart_preserves_coverage/1,
-    test_restart_while_charging/1
+    test_restart_while_charging/1,
+    test_no_duplicate_zones_after_restart/1
 ]).
 
 -define(GRID_6X4, {6, 4}).
@@ -66,6 +67,15 @@ test_restart_while_charging(_Config) ->
     ?assertEqual(NumDrones, map_size(ZA)),              %% resync перереєстрував усіх
     ?assertEqual(1, max_multiplicity(ZA)).              %% жодна зона не в двох дронів
 
+%% Реальні зони дронів (з view), а не облік координатора: після рестарту
+%% відкладені battery_low + zones_declined не мають роздати зону двом дронам.
+test_no_duplicate_zones_after_restart(_Config) ->
+    Old = whereis(drone_swarm_coordinator),
+    ok = wait_charging_drone(?NUM_DRONES_6, 15000),
+    ok = drone_swarm_chaos_monkey:kill_coordinator(),
+    ok = wait_for_new_pid(drone_swarm_coordinator, Old, 5000),
+    ?assertEqual([], persistent_duplicates(50, [])).   %% 50 × 100 мс = 5 с
+
 drone_pids() ->
     lists:sort([P || {_, P, _, _} <- supervisor:which_children(drone_swarm_workers_sup),
         is_pid(P)]).
@@ -95,3 +105,17 @@ max_multiplicity(ZoneAssignments) ->
     All  = lists:append([Zs || {_R, Zs} <- maps:values(ZoneAssignments)]),
     Freq = lists:foldl(fun(Z, A) -> maps:update_with(Z, fun(N) -> N + 1 end, 1, A) end, #{}, All),
     lists:max([1 | maps:values(Freq)]).
+
+%% Зони, що належать двом дронам у двох замірах поспіль (короткий збіг під час
+%% передачі зон між дронами не рахуємо).
+persistent_duplicates(0, _Prev) ->
+    [];
+persistent_duplicates(N, Prev) ->
+    timer:sleep(100),
+    #{drones := Ds} = drone_swarm_view:snapshot(),
+    Zones = lists:sort([Z || #{zones := L} <- Ds, Z <- L]),
+    Dups = lists:usort(Zones -- lists:usort(Zones)),
+    case [Z || Z <- Dups, lists:member(Z, Prev)] of
+        [] -> persistent_duplicates(N - 1, Dups);
+        Persistent -> Persistent
+    end.

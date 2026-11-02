@@ -208,15 +208,17 @@ function renderPanel(s) {
   document.getElementById("counts").textContent =
     `active ${byState("active").length} · charging ${byState("charging").length} · ` +
     `idle ${byState("idle").length} · free zones ${free}`;
+  fillList("active", byState("active"), (d) => `${d.id}  ${d.zones.length} zones`);
   fillList("charging", byState("charging"));
   fillList("idle", byState("idle"));
+  fillList("killed", s.dead, undefined, () => "#c0392b");   // вбиті вже без кольору — червоні, як хрестик
 }
 
-function fillList(elId, drones) {
+function fillList(elId, drones, label = (d) => d.id, color = (d) => droneColor(d.id)) {
   const items = drones.map((d) => {
     const li = document.createElement("li");
-    li.textContent = d.id;
-    li.style.color = droneColor(d.id);
+    li.textContent = label(d);
+    li.style.color = color(d);
     return li;
   });
   document.getElementById(elId).replaceChildren(...items);

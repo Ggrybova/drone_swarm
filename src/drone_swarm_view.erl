@@ -8,7 +8,7 @@
 
 -define(SERVER, ?MODULE).
 -define(TICK, 200).        %% як часто розсилати знімок, мс
--define(DEAD_TTL, 2000).   %% скільки показувати загиблого дрона, мс
+-define(DEAD_TTL, 3000).   %% скільки показувати загиблого дрона, мс
 
 -include("drone_swarm.hrl").
 
@@ -65,7 +65,7 @@ init([]) ->
 handle_call(snapshot, _From, State) ->
     {reply, to_map(State), State};
 handle_call(Request, From, State) ->
-    logger:info(" ERROR~nRequest: ~p,~nFrom: ~p,~nState: ~p,~n", [Request, From, State]),
+    logger:warning("unknown call ~p from ~p", [Request, From]),
     {reply, {error, unknown_call}, State}.
 
 handle_cast({update, Pid, StateName, Pos, Zones}, #state{drones = Drones} = State) ->
@@ -80,7 +80,7 @@ handle_cast({subscribe, Pid}, #state{subscribers = Subs} = State) ->
     Pid ! {drone_swarm_view, encode(State)},
     {noreply, State#state{subscribers = Subs#{Pid => MRef}}};
 handle_cast(Request, #state{} = State) ->
-    logger:info(" ERROR~nRequest: ~p,~nState: ~p,~n", [Request, State]),
+    logger:warning("unknown cast ~p", [Request]),
     {noreply, State}.
 
 handle_info(tick, State) ->
