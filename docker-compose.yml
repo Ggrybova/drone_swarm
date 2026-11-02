@@ -1,0 +1,7 @@
+services:
+  drone_swarm:
+    build: .
+    image: drone_swarm
+    container_name: drone_swarm
+    ports:
+      - "8080:8080"
