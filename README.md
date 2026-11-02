@@ -151,6 +151,44 @@ Kill the coordinator manually (to check reconciliation):
 drone_swarm_chaos_monkey:kill_coordinator().
 ```
 
+### Release
+
+```
+rebar3 as prod release
+_build/prod/rel/drone_swarm/bin/drone_swarm daemon           # start in background
+_build/prod/rel/drone_swarm/bin/drone_swarm remote_console   # attach a shell
+_build/prod/rel/drone_swarm/bin/drone_swarm stop
+```
+
+Leave `remote_console` with Ctrl+G, then `q`. `q().` and `init:stop().`
+stop the whole node.
+
+### Docker
+
+```
+docker build -t drone_swarm .
+docker run --rm --name drone_swarm -p 8080:8080 drone_swarm
+```
+
+Then open http://localhost:8080. Attach a shell to the running container:
+
+```
+docker exec -it drone_swarm bin/drone_swarm remote_console
+```
+
+Stop the container with Ctrl+C, or from another terminal:
+
+```
+docker stop drone_swarm
+```
+
+Or with Docker Compose:
+
+```
+docker compose up --build    # Ctrl+C to stop
+docker compose down
+```
+
 ## Tests
 
 ```
@@ -170,13 +208,6 @@ rebar3 ct      # Common Test suites below
   (`test_restart_while_charging`), and the drones' real zones (as seen by
   `drone_swarm_view`) stay unique after the restart
   (`test_no_duplicate_zones_after_restart`).
-
-## Status
-
-The OTP application core (drones, coordinator, supervision, chaos monkey,
-self-healing on both levels, coordinator reconciliation) is implemented
-and covered by tests. The web visualization (Cowboy + WebSocket + browser
-map) is implemented. The Docker wrapper is not implemented yet.
 
 ## License
 
@@ -336,6 +367,44 @@ http://localhost:8080.
 drone_swarm_chaos_monkey:kill_coordinator().
 ```
 
+### Реліз
+
+```
+rebar3 as prod release
+_build/prod/rel/drone_swarm/bin/drone_swarm daemon           # запуск у фоні
+_build/prod/rel/drone_swarm/bin/drone_swarm remote_console   # підключити shell
+_build/prod/rel/drone_swarm/bin/drone_swarm stop
+```
+
+Виходити з `remote_console` через Ctrl+G, потім `q`. `q().` та `init:stop().`
+зупиняють усю ноду.
+
+### Docker
+
+```
+docker build -t drone_swarm .
+docker run --rm --name drone_swarm -p 8080:8080 drone_swarm
+```
+
+Далі відкрити http://localhost:8080. Підключити shell до запущеного контейнера:
+
+```
+docker exec -it drone_swarm bin/drone_swarm remote_console
+```
+
+Зупинити контейнер: Ctrl+C або з іншого терміналу:
+
+```
+docker stop drone_swarm
+```
+
+Або через Docker Compose:
+
+```
+docker compose up --build    # Ctrl+C — зупинити
+docker compose down
+```
+
 ## Тести
 
 ```
@@ -355,13 +424,6 @@ rebar3 ct      # Common Test suites нижче
   (`test_restart_while_charging`), і реальні зони дронів (за даними
   `drone_swarm_view`) лишаються унікальними після рестарту
   (`test_no_duplicate_zones_after_restart`).
-
-## Статус
-
-Ядро OTP-застосунку (дрони, координатор, supervision, chaos monkey,
-self-healing на обох рівнях, reconciliation координатора) реалізоване й
-покрите тестами. Веб-візуалізація (Cowboy + WebSocket + карта в браузері)
-реалізована. Docker-обгортка поки не реалізована.
 
 ## Ліцензія
 
