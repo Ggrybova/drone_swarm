@@ -5,6 +5,8 @@ independent process (`gen_statem`) with a state life cycle; a separate
 coordinator process splits the map into zones and distributes them among
 drones.
 
+![Live swarm map](docs/demo.gif)
+
 The core idea of the project is **self-healing on two levels at once**:
 
 | Level | What happens on failure |
@@ -220,6 +222,8 @@ MIT — see [LICENSE](LICENSE).
 Симуляція рою автономних дронів на Erlang/OTP. Кожен дрон — незалежний
 процес (`gen_statem`) з життєвим циклом станів; окремий процес-координатор
 ділить карту на зони та розподіляє їх між дронами.
+
+![Жива карта рою](docs/demo.gif)
 
 Ключова ідея проєкту — **self-healing на двох рівнях одночасно**:
 

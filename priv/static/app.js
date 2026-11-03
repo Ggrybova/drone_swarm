@@ -1,7 +1,7 @@
 "use strict";
 
 const FIRST_LERP_MS = 1000;          // тривалість першого переїзду, поки інтервал між кроками невідомий
-const FADE_MS = 1800;                // скільки тане дрон, що пішов на зарядку
+const FADE_MS = 3000;                // скільки тане дрон, що пішов на зарядку
 const SMOOTH_MS = 600;               // наскільки м'яко дрон «наздоганяє» свою траєкторію
 const canvas = document.getElementById("map");
 const ctx = canvas.getContext("2d");
