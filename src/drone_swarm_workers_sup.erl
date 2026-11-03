@@ -20,7 +20,7 @@ init([NumDrones]) ->
     ],
 
     {ok, {#{strategy => one_for_one,
-        intensity => 5,
-        period => 30},
+        intensity => 10,
+        period => 10},
         Children}
     }.
